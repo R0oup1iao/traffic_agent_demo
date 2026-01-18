@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚦 智慧交通诱导智能体</title>
+    <meta name="description" content="基于多源异构交通大数据的实时诱导与决策支持系统">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Markdown Parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🚦</span>
+                <div class="logo-text">
+                    <h1>智慧交通诱导智能体</h1>
+                    <p>Traffic Intelligence Agent</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-ghost" id="debugToggle">
+                    🐛 <span>调试面板</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Chat Panel -->
+            <section class="chat-panel">
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Welcome Message -->
+                    <div class="welcome-message" id="welcomeMessage">
+                        <div class="welcome-icon">🚗</div>
+                        <h2>您好，我是交通诱导助手</h2>
+                        <p>我集成了博士论文中的四大核心技术：时空预测、异常感知、因果分析和出行推荐，可以为您提供智能化的交通诱导建议。</p>
+                        <div class="example-prompts">
+                            <button class="example-prompt" data-prompt="从北京南站到清华大学怎么走？">🚇 从北京南站到清华大学</button>
+                            <button class="example-prompt" data-prompt="西二环发生事故，对我去机场有影响吗？">⚠️ 西二环事故影响分析</button>
+                            <button class="example-prompt" data-prompt="预测明天周一早高峰的通行状况">📊 早高峰预测</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Input -->
+                <div class="chat-input-container">
+                    <div class="chat-input-wrapper">
+                        <textarea 
+                            class="chat-input" 
+                            id="chatInput" 
+                            placeholder="请输入您的交通问题..."
+                            rows="1"
+                        ></textarea>
+                        <button class="send-btn" id="sendBtn" title="发送">
+                            ➤
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Debug Panel -->
+            <aside class="debug-panel hidden" id="debugPanel">
+                <div class="debug-header">
+                    <h3>🐛 调试面板</h3>
+                </div>
+                <div class="debug-tabs">
+                    <button class="debug-tab active" data-tab="logs">📋 执行日志</button>
+                    <button class="debug-tab" data-tab="state">📊 状态摘要</button>
+                </div>
+                <div class="debug-content" id="debugContent">
+                    <div id="logsTab">
+                        <p style="color: var(--text-muted); text-align: center; padding: 2rem;">
+                            发送消息后，此处将显示 Agent 的执行日志
+                        </p>
+                    </div>
+                    <div id="stateTab" class="hidden">
+                        <div class="state-json" id="stateJson">
+                            { "status": "等待中..." }
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

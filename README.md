@@ -10,10 +10,10 @@
 
 | 组件 | 技术 | 作用 | 对应论文章节 |
 |:----:|:----:|:----:|:------------:|
-| 🧠 认知编排 | [LangGraph](https://github.com/langchain-ai/langgraph) | 实现有向循环图（DCG）认知流 | 4.2.1 节 |
-| 🤖 大语言模型 | [OpenAI 兼容 API](https://platform.openai.com/) | 自然语言理解与生成 | 4.2.1 节 |
-| 🗺️ 地图服务 | [高德地图 API](https://lbs.amap.com/) | 路径规划、POI 检索 | 4.2.3 节 |
-| 🖥️ 交互界面 | [Gradio](https://gradio.app/) | 提供 Web 聊天界面与调试面板 | 4.2.4 节 |
+| 🧠 认知编排 | [LangGraph](https://github.com/langchain-ai/langgraph) | 实现有向循环图（DCG）认知流 | 6.2.1 节 |
+| 🤖 大语言模型 | [OpenAI 兼容 API](https://platform.openai.com/) | 自然语言理解与生成 | 64.2.1 节 |
+| 🗺️ 地图服务 | [高德地图 API](https://lbs.amap.com/) | 路径规划、POI 检索 | 6.2.3 节 |
+| 🖥️ 交互界面 | [Gradio](https://gradio.app/) | 提供 Web 聊天界面与调试面板 | 6.2.4 节 |
 
 ---
 

@@ -5,7 +5,8 @@ description = "Traffic Intelligence Agent Engineering Demo"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "gradio>=6.3.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
     "httpx>=0.28.1",
     "langchain-openai>=0.3.1",
     "langgraph>=0.2.66",
