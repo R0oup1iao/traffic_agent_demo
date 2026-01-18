@@ -1,0 +1,25 @@
+# 交通诱导智能体 Demo 依赖
+
+# ============ 简单版本 (simple_agent.py) ============
+# OpenAI 官方 SDK
+openai>=1.0.0
+
+# Gradio 对话界面
+gradio>=4.0.0
+
+# ============ 完整版本 (smoke_test.py) ============
+# LangGraph 智能体框架
+langgraph>=0.2.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+
+# MCP (Model Context Protocol)
+mcp>=1.0.0
+
+# FastAPI 服务
+fastapi>=0.115.0
+uvicorn>=0.32.0
+
+# 其他工具
+httpx>=0.27.0
+pydantic>=2.0.0
