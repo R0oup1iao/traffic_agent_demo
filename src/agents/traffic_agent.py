@@ -38,5 +38,5 @@ def create_agent():
     
     return workflow.compile()
 
+
 traffic_agent = create_agent()
-传播_agent = traffic_agent # Alias

@@ -1,7 +1,7 @@
 import json
 import time
 import re
-from typing import Literal, Optional
+from typing import Literal, Optional, Callable
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from ..core.state import AgentState
 from ..core.llm import get_llm
@@ -10,6 +10,22 @@ from ..tools.maps import route_planning
 
 # 获取 LLM 实例 (不再 bind_tools)
 llm = get_llm()
+
+# 全局状态回调函数
+_status_callback: Optional[Callable[[str, str, str], None]] = None
+
+def set_status_callback(callback: Optional[Callable[[str, str, str], None]]):
+    """设置状态回调函数"""
+    global _status_callback
+    _status_callback = callback
+
+def _notify_status(phase: str, text: str, detail: str = ""):
+    """通知状态变化"""
+    if _status_callback:
+        try:
+            _status_callback(phase, text, detail)
+        except Exception as e:
+            print(f"Status callback error: {e}")
 
 # 工具映射表
 TOOL_MAP = {
@@ -47,6 +63,10 @@ def _add_debug_log(state: AgentState, log_type: str, content: dict) -> None:
 def perception_node(state: AgentState) -> AgentState:
     """感知节点：提取意图"""
     print("🔍 [Perception] Extracting intent & locations...")
+    _notify_status("perception", "🔍 正在感知用户意图...", "分析您的问题")
+    
+    # 添加调试日志
+    _add_debug_log(state, "perception", {"action": "开始提取用户意图和地点信息"})
     
     if not state.get("messages"):
         state["messages"] = [HumanMessage(content=state["user_request"])]
@@ -68,8 +88,14 @@ If unknown, use empty string."""
             state["origin"] = data.get("origin", "")
             state["destination"] = data.get("destination", "")
             print(f"   📍 Extracted: {state['origin']} -> {state['destination']}")
+            _add_debug_log(state, "perception", {
+                "action": "地点提取完成",
+                "origin": state["origin"],
+                "destination": state["destination"]
+            })
     except Exception as e:
         print(f"   ⚠️ Perception failed: {e}")
+        _add_debug_log(state, "perception", {"action": "地点提取失败", "error": str(e)})
 
     state["current_step"] = "perception"
     return state
@@ -78,6 +104,9 @@ def planning_node(state: AgentState) -> AgentState:
     """规划节点：手动 Prompt 驱动工具调用"""
     retry_count = state.get("retry_count", 0)
     print(f"📋 [Planning] Reasoning... (attempt {retry_count + 1})")
+    _notify_status("planning", "📋 正在规划方案...", f"模型思考中 (尝试 {retry_count + 1})")
+    
+    _add_debug_log(state, "llm_response", {"action": f"开始规划 (第 {retry_count + 1} 次)"})
     
     # ============================================================
     # 核心修改：Construct "Text-to-JSON" Prompt
@@ -116,10 +145,12 @@ def planning_node(state: AgentState) -> AgentState:
         response = llm.invoke(messages)
         content = response.content.strip()
         print(f"   📝 Raw LLM Output: {content[:100]}...")
+        _add_debug_log(state, "llm_response", {"action": "LLM 响应", "content": content[:200]})
     except Exception as e:
         print(f"   ❌ LLM Error: {e}")
         response = AIMessage(content="API Error")
         content = ""
+        _add_debug_log(state, "llm_response", {"action": "LLM 错误", "error": str(e)})
 
     state["messages"].append(response)
     
@@ -140,11 +171,23 @@ def planning_node(state: AgentState) -> AgentState:
             
             if tool_name in TOOL_MAP:
                 print(f"   🛠️ Manually Executing: {tool_name} with {tool_args}")
+                _notify_status("execution", "⚡ 正在执行工具...", f"调用 {tool_name}")
+                _add_debug_log(state, "tool_execution", {
+                    "tool": tool_name,
+                    "args": tool_args
+                })
+                
                 tool_func = TOOL_MAP[tool_name]
                 
                 # 执行工具
                 tool_output = tool_func.invoke(tool_args)
                 outputs.append({"tool": tool_name, "output": tool_output})
+                
+                _add_debug_log(state, "tool_execution", {
+                    "tool": tool_name,
+                    "status": "完成",
+                    "output_preview": str(tool_output)[:200]
+                })
                 
                 # 伪造一个 ToolMessage (为了保持 State 结构一致性)
                 state["messages"].append(ToolMessage(
@@ -155,8 +198,10 @@ def planning_node(state: AgentState) -> AgentState:
                 tool_called = True
             else:
                 print(f"   ⚠️ Unknown tool in JSON: {tool_name}")
-        except json.JSONDecodeError:
+                _add_debug_log(state, "tool_error", {"error": f"未知工具: {tool_name}"})
+        except json.JSONDecodeError as e:
             print("   ⚠️ JSON Parse Failed")
+            _add_debug_log(state, "tool_error", {"error": f"JSON 解析失败: {str(e)}"})
     
     if not tool_called:
         print("   ⚠️ No valid JSON tool call found.")
@@ -168,15 +213,25 @@ def planning_node(state: AgentState) -> AgentState:
 def reflection_node(state: AgentState) -> AgentState:
     """反思节点"""
     print("🤔 [Reflection] Reviewing...")
+    _notify_status("reflection", "🤔 正在反思评估...", "检查结果质量")
+    
     retry_count = state.get("retry_count", 0) + 1
     state["retry_count"] = retry_count
+    
+    _add_debug_log(state, "reflection", {
+        "action": "评估结果",
+        "retry_count": retry_count,
+        "has_tool_outputs": bool(state.get("tool_outputs"))
+    })
     
     # 只要有工具输出，或者重试次数够了，就通过
     if state.get("tool_outputs") or retry_count >= MAX_RETRY_COUNT:
         state["reflection_score"] = 1.0
+        _add_debug_log(state, "reflection", {"result": "通过", "score": 1.0})
     else:
         state["reflection_score"] = 0.0
         print("   🛑 No tools used, injecting critique...")
+        _add_debug_log(state, "reflection", {"result": "需要重试", "score": 0.0})
         # 注入更明确的 Prompt
         state["messages"].append(HumanMessage(
             content="Error: You did not output the required JSON tool call. Please output JSON ONLY: {\"tool\": \"route_planning\", \"args\": {...}}"
@@ -188,6 +243,10 @@ def reflection_node(state: AgentState) -> AgentState:
 def output_node(state: AgentState) -> AgentState:
     """输出节点"""
     print("✅ [Output] Generating report...")
+    _notify_status("execution", "📝 正在生成报告...", "整合结果")
+    
+    _add_debug_log(state, "final_output", {"action": "开始生成最终报告"})
+    
     context = json.dumps(state.get('tool_outputs', []), ensure_ascii=False)
     prompt = f"根据以下数据回答用户问题（如果是JSON数据请解读它）。\n数据：{context}\n\n用户问题：{state['user_request']}"
     
@@ -195,4 +254,10 @@ def output_node(state: AgentState) -> AgentState:
     state["recommendation"] = response.content
     state["messages"].append(AIMessage(content=response.content))
     state["current_step"] = "output"
+    
+    _add_debug_log(state, "final_output", {
+        "action": "报告生成完成",
+        "length": len(response.content)
+    })
+    
     return state

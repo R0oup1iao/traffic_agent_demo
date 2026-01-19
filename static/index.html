@@ -29,6 +29,9 @@
                 </div>
             </div>
             <div class="header-actions">
+                <button class="btn btn-ghost hidden" id="homeBtn" title="返回首页">
+                    🏠 <span>返回首页</span>
+                </button>
                 <button class="btn btn-ghost" id="debugToggle">
                     🐛 <span>调试面板</span>
                 </button>
@@ -50,6 +53,20 @@
                             <button class="example-prompt" data-prompt="西二环发生事故，对我去机场有影响吗？">⚠️ 西二环事故影响分析</button>
                             <button class="example-prompt" data-prompt="预测明天周一早高峰的通行状况">📊 早高峰预测</button>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Agent Status Indicator -->
+                <div class="agent-status-bar hidden" id="agentStatusBar">
+                    <div class="status-indicator">
+                        <div class="status-icon" id="statusIcon">🔄</div>
+                        <div class="status-content">
+                            <div class="status-phase" id="statusPhase">正在初始化...</div>
+                            <div class="status-detail" id="statusDetail"></div>
+                        </div>
+                    </div>
+                    <div class="status-progress">
+                        <div class="progress-bar" id="progressBar"></div>
                     </div>
                 </div>
 
