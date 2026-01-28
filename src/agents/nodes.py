@@ -1,12 +1,13 @@
 import json
 import time
 import re
+import asyncio
 from typing import Literal, Optional, Callable
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from ..core.state import AgentState
 from ..core.llm import get_llm
 from ..tools.traffic_tools import traffic_prediction, anomaly_detection, causal_analysis, travel_recommendation
-from ..tools.maps import route_planning
+from ..tools.mcp_client import get_mcp_tool_map, get_mcp_tool_descriptions
 
 # 获取 LLM 实例 (不再 bind_tools)
 llm = get_llm()
@@ -27,23 +28,42 @@ def _notify_status(phase: str, text: str, detail: str = ""):
         except Exception as e:
             print(f"Status callback error: {e}")
 
-# 工具映射表
-TOOL_MAP = {
+# 本地工具映射表（不含 MCP 工具）
+LOCAL_TOOL_MAP = {
     "traffic_prediction": traffic_prediction,
     "anomaly_detection": anomaly_detection,
     "causal_analysis": causal_analysis,
     "travel_recommendation": travel_recommendation,
-    "route_planning": route_planning
 }
 
-# 手动生成工具描述文档
-TOOL_DESC = """
-1. route_planning: 路径规划。参数: origin(起点), destination(终点), mode(transit/driving/walking)。
-2. traffic_prediction: 预测交通拥堵。参数: origin, destination。
-3. anomaly_detection: 检测异常事件。参数: location。
-4. causal_analysis: 分析事故影响。参数: affected_area。
-5. travel_recommendation: 综合出行推荐。参数: origin, destination。
+# 本地工具描述
+LOCAL_TOOL_DESC = """
+1. traffic_prediction: 预测交通拥堵。参数: origin, destination。
+2. anomaly_detection: 检测异常事件。参数: location。
+3. causal_analysis: 分析事故影响。参数: affected_area。
+4. travel_recommendation: 综合出行推荐。参数: origin, destination。
 """
+
+def get_tool_map():
+    """获取完整工具映射（本地工具 + MCP工具）"""
+    tool_map = LOCAL_TOOL_MAP.copy()
+    try:
+        mcp_tools = get_mcp_tool_map()
+        tool_map.update(mcp_tools)
+    except Exception as e:
+        print(f"⚠️ Failed to load MCP tools: {e}")
+    return tool_map
+
+def get_tool_desc():
+    """获取完整工具描述（本地工具 + MCP工具）"""
+    desc = LOCAL_TOOL_DESC
+    try:
+        mcp_desc = get_mcp_tool_descriptions()
+        if mcp_desc:
+            desc += "\n【高德地图MCP工具】\n" + mcp_desc
+    except Exception as e:
+        print(f"⚠️ Failed to get MCP tool descriptions: {e}")
+    return desc
 
 # 最大重试次数
 MAX_RETRY_COUNT = 3
@@ -111,23 +131,31 @@ def planning_node(state: AgentState) -> AgentState:
     # ============================================================
     # 核心修改：Construct "Text-to-JSON" Prompt
     # ============================================================
+    tool_desc = get_tool_desc()  # 动态获取工具描述
+    
     system_instruction = f"""你是一个交通智能体。
 【可用工具】
-{TOOL_DESC}
+{tool_desc}
 
 【任务】
 请分析用户问题，决定是否需要调用工具。
-如果需要，**必须**仅输出一个 JSON 对象，格式如下：
-{{
-    "tool": "工具名称",
-    "args": {{ "参数名": "参数值" }}
-}}
+如果需要，**必须**输出一个 JSON 列表，格式如下：
+[
+  {{ "tool": "工具名称", "args": {{ "参数名": "参数值" }} }},
+  {{ "tool": "工具名称", "args": {{ "参数名": "参数值" }} }}
+]
 
 **禁止事项**：
 1. 不要输出任何Markdown标记（如 ```json）。
 2. 不要输出任何解释性文字。
-3. 如果用户问路，必须调用 `route_planning`。
+3. 工具名必须从【可用工具】列表中选择，不要编造工具名。
 4. 如果不需要工具，直接输出 "DIRECT_ANSWER: 你的回答"。
+
+**重要提示**：
+- 只要涉及地点查询、路线规划、距离测量，**必须**使用工具，严禁编造数据。
+- 高德地图API仅支持经纬度作为起终点，因此**必须先调用 maps_geo 获取经纬度**。
+- 支持一次性调用多个工具（例如同时获取起点和终点的坐标）。
+- 即使你知道大概路线，也必须调用工具获取实时准确信息。
 """
     if state.get("origin"):
         system_instruction += f"\n[已知信息] 起点:{state['origin']} 终点:{state['destination']}"
@@ -155,55 +183,95 @@ def planning_node(state: AgentState) -> AgentState:
     state["messages"].append(response)
     
     # ============================================================
-    # 核心修改：手动解析 JSON (Manual Parsing)
+    # 核心修改：手动解析 JSON List (Manual Parsing)
     # ============================================================
     outputs = state.get("tool_outputs", [])
-    tool_called = False
+    tool_calls = []
 
-    # 尝试寻找 JSON 结构
-    json_match = re.search(r"\{.*\}", content.replace("\n", ""), re.DOTALL)
+    # 尝试寻找 JSON 结构 (List or Object)
+    # 匹配方括号 [...] 或 花括号 {...}
+    json_match = re.search(r"(\[.*\]|\{.*\})", content.replace("\n", ""), re.DOTALL)
     
     if json_match and "DIRECT_ANSWER" not in content:
         try:
-            tool_data = json.loads(json_match.group(0))
-            tool_name = tool_data.get("tool")
-            tool_args = tool_data.get("args", {})
+            parsed_data = json.loads(json_match.group(0))
+            if isinstance(parsed_data, dict):
+                tool_calls.append(parsed_data)
+            elif isinstance(parsed_data, list):
+                tool_calls.extend(parsed_data)
             
-            if tool_name in TOOL_MAP:
-                print(f"   🛠️ Manually Executing: {tool_name} with {tool_args}")
-                _notify_status("execution", "⚡ 正在执行工具...", f"调用 {tool_name}")
-                _add_debug_log(state, "tool_execution", {
-                    "tool": tool_name,
-                    "args": tool_args
-                })
+            if tool_calls:
+                print(f"   🛠️ Scheduled {len(tool_calls)} tools for execution")
+                _notify_status("execution", "⚡ 正在执行工具...", f"并发调用 {len(tool_calls)} 个工具")
                 
-                tool_func = TOOL_MAP[tool_name]
+                tool_map = get_tool_map()
                 
-                # 执行工具
-                tool_output = tool_func.invoke(tool_args)
-                outputs.append({"tool": tool_name, "output": tool_output})
+                # 并发执行工具
+                import concurrent.futures
+                import random
                 
-                _add_debug_log(state, "tool_execution", {
-                    "tool": tool_name,
-                    "status": "完成",
-                    "output_preview": str(tool_output)[:200]
-                })
+                def execute_tool(tool_call):
+                    t_name = tool_call.get("tool")
+                    t_args = tool_call.get("args", {})
+                    
+                    if t_name not in tool_map:
+                        return {"tool": t_name, "error": f"Unknown tool: {t_name}"}
+                    
+                    try:
+                        t_func = tool_map[t_name]
+                        
+                        # 检查是否是异步函数
+                        if asyncio.iscoroutinefunction(t_func.ainvoke):
+                            # 异步工具需要特殊处理
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    # 如果事件循环正在运行，使用 ThreadPoolExecutor 运行异步任务
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(asyncio.run, t_func.ainvoke(t_args))
+                                        result = future.result(timeout=30) # 增加超时
+                                else:
+                                    # 如果事件循环未运行，直接运行
+                                    result = loop.run_until_complete(t_func.ainvoke(t_args))
+                            except RuntimeError:
+                                # 如果在另一个线程中调用，且没有事件循环，则创建并运行
+                                result = asyncio.run(t_func.ainvoke(t_args))
+                        else:
+                            # 同步工具直接调用 invoke
+                            result = t_func.invoke(t_args)
+                            
+                        return {"tool": t_name, "output": result}
+                        
+                    except Exception as e:
+                        return {"tool": t_name, "error": str(e)}
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    results = list(executor.map(execute_tool, tool_calls))
                 
-                # 伪造一个 ToolMessage (为了保持 State 结构一致性)
-                state["messages"].append(ToolMessage(
-                    content=str(tool_output),
-                    tool_call_id=f"manual_{int(time.time())}", # 伪造 ID
-                    name=tool_name
-                ))
-                tool_called = True
+                for res in results:
+                    outputs.append(res)
+                    # Log result
+                    if "error" in res:
+                        print(f"     ❌ {res['tool']} failed: {res['error']}")
+                        _add_debug_log(state, "tool_error", {"tool": res['tool'], "error": res['error']})
+                    else:
+                        print(f"     ✅ {res['tool']} completed")
+                        _add_debug_log(state, "tool_execution", {"tool": res['tool'], "status": "完成"})
+                        
+                    # 伪造 ToolMessage
+                    state["messages"].append(ToolMessage(
+                        content=str(res.get("output", res.get("error"))),
+                        tool_call_id=f"manual_{int(time.time())}_{random.randint(0,1000)}",
+                        name=res["tool"]
+                    ))
+
             else:
-                print(f"   ⚠️ Unknown tool in JSON: {tool_name}")
-                _add_debug_log(state, "tool_error", {"error": f"未知工具: {tool_name}"})
+                print("   ⚠️ Empty JSON list found")
+
         except json.JSONDecodeError as e:
             print("   ⚠️ JSON Parse Failed")
             _add_debug_log(state, "tool_error", {"error": f"JSON 解析失败: {str(e)}"})
-    
-    if not tool_called:
+    else:
         print("   ⚠️ No valid JSON tool call found.")
 
     state["tool_outputs"] = outputs
@@ -211,31 +279,109 @@ def planning_node(state: AgentState) -> AgentState:
     return state
 
 def reflection_node(state: AgentState) -> AgentState:
-    """反思节点"""
+    """反思节点 - 智能判断任务是否完成"""
     print("🤔 [Reflection] Reviewing...")
     _notify_status("reflection", "🤔 正在反思评估...", "检查结果质量")
     
     retry_count = state.get("retry_count", 0) + 1
     state["retry_count"] = retry_count
     
+    tool_outputs = state.get("tool_outputs", [])
+    user_request = state.get("user_request", "")
+    
     _add_debug_log(state, "reflection", {
         "action": "评估结果",
         "retry_count": retry_count,
-        "has_tool_outputs": bool(state.get("tool_outputs"))
+        "tool_outputs_count": len(tool_outputs)
     })
     
-    # 只要有工具输出，或者重试次数够了，就通过
-    if state.get("tool_outputs") or retry_count >= MAX_RETRY_COUNT:
+    # 判断是否是路线规划问题
+    is_routing_question = any(kw in user_request for kw in ["怎么走", "怎么去", "路线", "导航", "到达", "前往"])
+    
+    # 检查是否调用了路线规划工具
+    called_tools = [o.get("tool", "") for o in tool_outputs]
+    has_direction_tool = any("direction" in t for t in called_tools)
+    has_geo_tool = any("geo" in t for t in called_tools)
+    
+    # 判断任务是否完成
+    task_complete = False
+    
+    if retry_count >= MAX_RETRY_COUNT:
+        # 重试次数用尽，强制通过
+        task_complete = True
+        print(f"   ⚠️ Max retries reached ({MAX_RETRY_COUNT})")
+    elif is_routing_question:
+        # 路线规划问题：需要调用 maps_direction_* 工具
+        if has_direction_tool:
+            task_complete = True
+            print("   ✅ Route planning completed with direction tool")
+        elif has_geo_tool and not has_direction_tool:
+            # 只调用了地理编码，还需要继续调用路线规划
+            task_complete = False
+            print("   🔄 Got coordinates, need to call direction tool next")
+        else:
+            task_complete = False
+    elif tool_outputs:
+        # 非路线规划问题：有工具输出就通过
+        task_complete = True
+    
+    if task_complete:
         state["reflection_score"] = 1.0
         _add_debug_log(state, "reflection", {"result": "通过", "score": 1.0})
     else:
         state["reflection_score"] = 0.0
-        print("   🛑 No tools used, injecting critique...")
-        _add_debug_log(state, "reflection", {"result": "需要重试", "score": 0.0})
-        # 注入更明确的 Prompt
-        state["messages"].append(HumanMessage(
-            content="Error: You did not output the required JSON tool call. Please output JSON ONLY: {\"tool\": \"route_planning\", \"args\": {...}}"
-        ))
+        _add_debug_log(state, "reflection", {"result": "需要继续", "score": 0.0})
+        
+        # 注入提示，引导下一步
+        if is_routing_question and has_geo_tool and not has_direction_tool:
+            # 从 geo 结果中提取坐标
+            geo_results = [o for o in tool_outputs if "geo" in o.get("tool", "")]
+            coords_list = []
+            for geo_result in geo_results:
+                output = geo_result.get("output", "")
+                # 尝试从输出中提取坐标
+                if isinstance(output, str):
+                    # 匹配 location 字段的坐标
+                    loc_match = re.search(r'"location":\s*"([0-9.]+,[0-9.]+)"', output)
+                    if loc_match:
+                        coords_list.append(loc_match.group(1))
+                elif isinstance(output, list):
+                    for item in output:
+                        if isinstance(item, dict) and 'text' in item:
+                            loc_match = re.search(r'"location":\s*"([0-9.]+,[0-9.]+)"', item['text'])
+                            if loc_match:
+                                coords_list.append(loc_match.group(1))
+            
+            origin = state.get("origin", "")
+            destination = state.get("destination", "")
+            
+            if len(coords_list) >= 2:
+                # 已有两个坐标，可以调用路线规划
+                state["messages"].append(HumanMessage(
+                    content=f"已获取起点坐标 {coords_list[0]} 和终点坐标 {coords_list[1]}。请调用 maps_direction_transit_integrated 工具，参数: origin=\"{coords_list[0]}\", destination=\"{coords_list[1]}\"。输出 JSON 格式。"
+                ))
+            elif len(coords_list) == 1:
+                # 只有一个坐标，需要获取另一个
+                missing_place = destination if origin else origin
+                state["messages"].append(HumanMessage(
+                    content=f"已获取坐标 {coords_list[0]}。还需要获取 \"{destination}\" 的坐标。请调用 maps_geo，参数 address=\"{destination}\"。"
+                ))
+            else:
+                # 没有提取到坐标，让 LLM 先获取起点坐标
+                state["messages"].append(HumanMessage(
+                    content=f"请先用 maps_geo 获取起点 \"{origin}\" 的坐标，参数 address=\"{origin}\"。"
+                ))
+        else:
+
+            # 没有任何工具调用，但却是路线问题
+            if is_routing_question:
+                state["messages"].append(HumanMessage(
+                    content="错误：回答路线问题**必须**使用工具。请先调用 `maps_geo` 获取起点或终点的经纬度。禁止直接回答。"
+                ))
+            else:
+                state["messages"].append(HumanMessage(
+                    content="Error: 请从【可用工具】列表中选择合适的工具。格式: {\"tool\": \"工具名\", \"args\": {...}}"
+                ))
 
     state["current_step"] = "reflection"
     return state
