@@ -5,6 +5,7 @@ import json
 import asyncio
 import time
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException
@@ -16,11 +17,31 @@ from .agents.traffic_agent import traffic_agent
 from .agents.nodes import set_status_callback
 from .core.state import AgentState
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理，启动时初始化 MCP Client"""
+    # Startup
+    try:
+        from .tools.mcp_client import init_mcp_client
+        await init_mcp_client()
+        print("✅ MCP Client initialized successfully")
+    except Exception as e:
+        print(f"⚠️ MCP Client initialization failed: {e}")
+        print("   Continuing without MCP tools...")
+    
+    yield
+    
+    # Shutdown
+    print("🛑 Shutting down...")
+
+
 # ===== App 初始化 =====
 app = FastAPI(
     title="智慧交通诱导智能体",
     description="基于多源异构交通大数据的实时诱导与决策支持系统",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # 静态文件目录
