@@ -114,6 +114,7 @@ async def get_current_status():
 async def generate_stream(message: str) -> AsyncGenerator[str, None]:
     """
     流式生成 Agent 执行过程，通过 SSE 推送状态更新
+    使用 astream 实时获取每个节点的执行状态
     """
     global _last_debug_logs, _last_state
     
@@ -137,64 +138,81 @@ async def generate_stream(message: str) -> AsyncGenerator[str, None]:
     }
     
     # 发送初始状态
-    yield f"data: {json.dumps({'type': 'status', 'phase': 'perception', 'text': '🔍 正在感知用户意图...', 'detail': '分析您的问题'})}\n\n"
+    yield f"data: {json.dumps({'type': 'status', 'phase': 'perception', 'text': '🔍 正在感知用户意图...', 'detail': '分析您的问题'}, ensure_ascii=False)}\n\n"
     
     print(f"\n{'='*50}")
     print(f"📨 收到请求: {message}")
     print(f"{'='*50}")
     
-    # 设置状态回调
-    last_sent_status = {"phase": "perception", "text": "", "detail": ""}
+    # 节点名称到状态的映射
+    node_status_map = {
+        "perception": ("perception", "🔍 正在感知用户意图...", "分析用户问题"),
+        "call_model": ("planning", "📋 正在规划方案...", "模型思考中"),
+        "tools": ("execution", "⚡ 正在执行工具...", "调用外部服务"),
+        "output": ("output", "📝 正在生成报告...", "整合结果"),
+    }
     
-    def on_status_change(phase: str, text: str, detail: str = ""):
-        _update_current_status(phase, text, detail)
-    
-    set_status_callback(on_status_change)
+    final_state = None
     
     try:
-        # 在后台线程运行 Agent
-        import concurrent.futures
-        result_holder = {"final_state": None, "error": None}
+        # 使用 astream 流式获取每个节点的执行状态
+        async for event in traffic_agent.astream(initial_state, stream_mode="updates"):
+            # event 是一个字典，key 是节点名称，value 是该节点返回的状态更新
+            for node_name, node_output in event.items():
+                print(f"   📌 Node executed: {node_name}")
+                
+                # 获取对应的状态信息
+                if node_name in node_status_map:
+                    phase, text, detail = node_status_map[node_name]
+                    
+                    # 如果是 tools 节点，尝试提取工具调用信息
+                    if node_name == "tools":
+                        messages = node_output.get("messages", [])
+                        tool_names = []
+                        for msg in messages:
+                            if hasattr(msg, 'name'):
+                                tool_names.append(msg.name)
+                        if tool_names:
+                            detail = f"执行: {', '.join(tool_names)}"
+                    
+                    # 如果是 call_model 节点，检查是否有工具调用
+                    if node_name == "call_model":
+                        messages = node_output.get("messages", [])
+                        for msg in messages:
+                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                tool_names = [tc.get("name", "unknown") for tc in msg.tool_calls]
+                                phase = "execution"
+                                text = "🛠️ 正在调用工具..."
+                                detail = f"工具: {', '.join(tool_names)}"
+                    
+                    # 发送状态更新
+                    status_data = {
+                        'type': 'status',
+                        'phase': phase,
+                        'text': text,
+                        'detail': detail,
+                        'node': node_name
+                    }
+                    yield f"data: {json.dumps(status_data, ensure_ascii=False)}\n\n"
+                    _update_current_status(phase, text, detail)
+                
+                # 保存最新状态
+                if node_name == "output":
+                    final_state = node_output
         
-        def run_agent():
-            try:
-                result_holder["final_state"] = traffic_agent.invoke(initial_state)
-            except Exception as e:
-                result_holder["error"] = str(e)
-                import traceback
-                traceback.print_exc()
+        # 如果没有从 output 节点获取到状态，尝试获取完整状态
+        if final_state is None:
+            # 使用 ainvoke 作为后备
+            final_state = await traffic_agent.ainvoke(initial_state)
         
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(run_agent)
-        
-        # 轮询状态更新并推送
-        while not future.done():
-            await asyncio.sleep(0.2)  # 200ms 轮询间隔
-            
-            with _status_lock:
-                current = _current_status.copy()
-            
-            # 只有状态变化时才推送
-            if (current["phase"] != last_sent_status["phase"] or 
-                current["text"] != last_sent_status["text"]):
-                yield f"data: {json.dumps({'type': 'status', 'phase': current['phase'], 'text': current['text'], 'detail': current['detail']})}\n\n"
-                last_sent_status = current.copy()
-        
-        # 等待完成
-        future.result()
-        executor.shutdown(wait=False)
-        
-        # 检查是否有错误
-        if result_holder["error"]:
-            yield f"data: {json.dumps({'type': 'error', 'error': result_holder['error']})}\n\n"
-            return
-        
-        final_state = result_holder["final_state"]
+        # 合并状态（astream 只返回更新，可能需要合并）
+        recommendation = final_state.get("recommendation", "")
+        debug_logs = final_state.get("debug_logs", [])
         
         # 保存调试信息
-        _last_debug_logs = final_state.get("debug_logs", [])
+        _last_debug_logs = debug_logs
         _last_state = {
-            "user_request": final_state.get("user_request", ""),
+            "user_request": message,
             "origin": final_state.get("origin", ""),
             "destination": final_state.get("destination", ""),
             "traffic_status": final_state.get("traffic_status", ""),
@@ -204,22 +222,27 @@ async def generate_stream(message: str) -> AsyncGenerator[str, None]:
             "current_step": final_state.get("current_step", "")
         }
         
-        print(f"✅ 处理完成，生成报告 {len(final_state['recommendation'])} 字符")
+        print(f"✅ 处理完成，生成报告 {len(recommendation)} 字符")
         
         # 发送完成状态
-        yield f"data: {json.dumps({'type': 'status', 'phase': 'execution', 'text': '✅ 生成完成', 'detail': '正在输出回复...'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'phase': 'execution', 'text': '✅ 生成完成', 'detail': '正在输出回复...'}, ensure_ascii=False)}\n\n"
         
         # 发送最终结果
-        yield f"data: {json.dumps({'type': 'result', 'success': True, 'recommendation': final_state['recommendation'], 'debug_logs': _last_debug_logs, 'state': _last_state})}\n\n"
+        result_data = {
+            'type': 'result',
+            'success': True,
+            'recommendation': recommendation,
+            'debug_logs': _last_debug_logs,
+            'state': _last_state
+        }
+        yield f"data: {json.dumps(result_data, ensure_ascii=False)}\n\n"
         
     except Exception as e:
         print(f"❌ 处理出错: {e}")
         import traceback
         traceback.print_exc()
-        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
     finally:
-        # 清除回调
-        set_status_callback(None)
         _update_current_status("idle", "", "")
 
 
@@ -276,7 +299,7 @@ async def chat(request: ChatRequest):
         print(f"📨 收到请求: {message}")
         print(f"{'='*50}")
         
-        final_state = traffic_agent.invoke(initial_state)
+        final_state = await traffic_agent.ainvoke(initial_state)
         
         # 保存调试信息
         _last_debug_logs = final_state.get("debug_logs", [])

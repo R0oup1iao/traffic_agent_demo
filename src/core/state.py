@@ -1,5 +1,6 @@
-from typing import TypedDict, Annotated, List, Union
+from typing import TypedDict, Annotated, List
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.graph.message import add_messages
 
 class AgentState(TypedDict):
     """
@@ -21,7 +22,8 @@ class AgentState(TypedDict):
     # Meta
     reflection_score: float
     retry_count: int
-    messages: List[BaseMessage]
+    # 使用 add_messages reducer，消息会自动追加而非覆盖
+    messages: Annotated[List[BaseMessage], add_messages]
     current_step: str
     
     # Debug

@@ -1,42 +1,58 @@
+"""
+Traffic Intelligence Agent - LangGraph 图定义
+使用标准 ToolNode + bind_tools 模式
+"""
 from langgraph.graph import StateGraph, START, END
 from ..core.state import AgentState
-from .nodes import perception_node, planning_node, reflection_node, output_node
+from .nodes import (
+    perception_node,
+    call_model,
+    output_node,
+    create_tool_node,
+    should_continue,
+)
+
 
 def create_agent():
     """
-    Constructs the LangGraph StateGraph for the Traffic Guidance Agent.
+    构建 LangGraph StateGraph 实现的交通智能体。
+    
+    图结构:
+        START → perception → call_model ⟷ tools → output → END
     """
     workflow = StateGraph(AgentState)
     
-    # Add Nodes
+    # 创建 ToolNode
+    tool_node = create_tool_node()
+    
+    # 添加节点
     workflow.add_node("perception", perception_node)
-    workflow.add_node("planning", planning_node)
-    workflow.add_node("reflection", reflection_node)
+    workflow.add_node("call_model", call_model)
+    workflow.add_node("tools", tool_node)
     workflow.add_node("output", output_node)
     
-    # Define Edges
+    # 定义边
     workflow.add_edge(START, "perception")
-    workflow.add_edge("perception", "planning")
-    workflow.add_edge("planning", "reflection")
+    workflow.add_edge("perception", "call_model")
     
-    # Conditional Edge: Reflection -> Retry Planning or Success Output
-    def should_continue(state: AgentState):
-        if state["reflection_score"] < 0.6:
-            return "planning"
-        return "output"
-    
+    # 条件边：call_model -> tools 或 output
     workflow.add_conditional_edges(
-        "reflection",
+        "call_model",
         should_continue,
         {
-            "planning": "planning",
+            "tools": "tools",
             "output": "output"
         }
     )
     
+    # 工具执行后返回 call_model（继续对话）
+    workflow.add_edge("tools", "call_model")
+    
+    # 最终输出
     workflow.add_edge("output", END)
     
     return workflow.compile()
 
 
+# 创建全局 agent 实例
 traffic_agent = create_agent()

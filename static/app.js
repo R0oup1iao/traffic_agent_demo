@@ -181,6 +181,9 @@ async function sendMessage() {
                         if (data.type === 'status') {
                             // 更新状态栏
                             showAgentStatus(data.phase, data.text, data.detail);
+                            
+                            // 实时添加到调试日志
+                            addRealtimeLog(data);
                         } else if (data.type === 'result') {
                             // 保存最终结果
                             finalResult = data;
@@ -189,6 +192,7 @@ async function sendMessage() {
                             removeThinkingMessage(thinkingId);
                             showAgentStatus('error', '❌ 发生错误', data.error || '未知错误');
                             addMessage('抱歉，处理请求时发生错误: ' + (data.error || '未知错误'), 'assistant');
+                            addRealtimeLog({phase: 'error', text: '错误', detail: data.error || '未知错误', node: 'error'});
                             setTimeout(hideAgentStatus, 3000);
                             return;
                         }
@@ -465,6 +469,80 @@ function updateStateJson(state) {
 function clearDebugLogs() {
     logsTab.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 1rem;">正在处理...</p>';
     stateJson.textContent = '{ "status": "处理中..." }';
+}
+
+/**
+ * 实时添加调试日志条目
+ * @param {Object} data - SSE 状态数据 {phase, text, detail, node}
+ */
+function addRealtimeLog(data) {
+    // 移除"正在处理"提示
+    const placeholder = logsTab.querySelector('p');
+    if (placeholder) {
+        placeholder.remove();
+    }
+    
+    const entry = document.createElement('div');
+    
+    // 根据阶段/节点类型确定样式
+    let cssClass = '';
+    let icon = '📋';
+    let title = data.node || data.phase || 'status';
+    
+    switch (data.node || data.phase) {
+        case 'perception':
+            cssClass = 'tool';
+            icon = '🔍';
+            title = '感知';
+            break;
+        case 'call_model':
+        case 'planning':
+            cssClass = 'llm';
+            icon = '📋';
+            title = 'LLM 规划';
+            break;
+        case 'tools':
+        case 'execution':
+            cssClass = 'tool';
+            icon = '⚡';
+            title = '工具执行';
+            break;
+        case 'output':
+            cssClass = 'llm';
+            icon = '📄';
+            title = '生成输出';
+            break;
+        case 'error':
+            cssClass = 'error';
+            icon = '❌';
+            title = '错误';
+            break;
+        default:
+            cssClass = '';
+            icon = 'ℹ️';
+    }
+    
+    // 获取当前时间
+    const now = new Date();
+    const timestamp = now.toTimeString().split(' ')[0];
+    
+    // 构建日志内容
+    const content = data.detail || data.text || '';
+    
+    entry.className = `log-entry ${cssClass}`;
+    entry.innerHTML = `
+        <div class="log-header">
+            <span class="log-icon">${icon}</span>
+            <span>${title}</span>
+            <span class="log-time">${timestamp}</span>
+        </div>
+        <div class="log-body">${escapeHtml(content)}</div>
+    `;
+    
+    logsTab.appendChild(entry);
+    
+    // 自动滚动到底部
+    logsTab.scrollTop = logsTab.scrollHeight;
 }
 
 /**
