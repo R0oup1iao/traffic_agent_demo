@@ -12,6 +12,13 @@ from ..core.state import AgentState
 from ..core.llm import get_llm
 from ..tools.traffic_tools import traffic_prediction, anomaly_detection, causal_analysis, travel_recommendation
 from ..tools.mcp_client import get_mcp_tools_sync
+from langchain_core.globals import set_debug
+
+# 开启全局调试模式，所有 LLM 调用细节都会打印到控制台
+set_debug(True)
+
+# 获取 LLM 实例 (不再 bind_tools)
+llm = get_llm()
 
 # 全局状态回调函数
 _status_callback: Optional[Callable[[str, str, str], None]] = None
